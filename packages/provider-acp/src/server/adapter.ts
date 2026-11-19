@@ -563,6 +563,13 @@ export interface AcpAdapterV2Flavor {
     initializeResult: AcpSessionRuntime.AcpSessionRuntimeStartResult["initializeResult"],
   ) => boolean;
   /**
+   * Native steering an agent advertises in its `initialize` result, for flavors that serve
+   * many agents. Used only when `steering` is unset.
+   */
+  readonly negotiateSteering?: (
+    initializeResult: AcpSessionRuntime.AcpSessionRuntimeStartResult["initializeResult"],
+  ) => AcpAdapterV2Flavor["steering"];
+  /**
    * Native fork from an earlier turn. `nativeTurnId` reads the agent's id for a running
    * turn's prompt, which the turn keeps as its native ref; forking from that turn sends
    * `forkMeta(id)` as the `session/fork` `_meta`.
@@ -947,7 +954,7 @@ function negotiatedCapabilities(
   started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
   modelOptionArrivesLate: boolean,
   forksFromTurn: boolean,
-  steersWithPrompt: boolean,
+  negotiatesActiveSteering: boolean,
 ): OrchestrationV2ProviderCapabilities {
   const agent = started.initializeResult.agentCapabilities ?? {};
   const session = agent.sessionCapabilities;
@@ -970,7 +977,7 @@ function negotiatedCapabilities(
     },
     turns: {
       ...base.turns,
-      supportsActiveSteering: base.turns.supportsActiveSteering || steersWithPrompt,
+      supportsActiveSteering: base.turns.supportsActiveSteering || negotiatesActiveSteering,
     },
     tools: {
       ...base.tools,
@@ -7937,12 +7944,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         rememberTerminalEnvironment(started.sessionId, yield* readMcpContext(input.threadId));
         yield* runtime.drainEvents;
         const steersWithPrompt = flavor.steersWithPrompt?.(started.initializeResult) === true;
+        const steering = flavor.steering ?? flavor.negotiateSteering?.(started.initializeResult);
         const capabilities = negotiatedCapabilities(
           yield* readCapabilities,
           started,
           flavor.modelOptionArrivesLate === true,
           flavor.forkFromTurn?.supported(started.initializeResult) === true,
-          steersWithPrompt,
+          steersWithPrompt || steering !== undefined,
         );
         const canLoadSession = started.initializeResult.agentCapabilities?.loadSession === true;
         const canResumeSession =
@@ -9898,7 +9906,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           steerTurn: Effect.fn("AcpAdapterV2.steerTurn")(
             function* (turnInput) {
               if (steersWithPrompt) return yield* steerWithPrompt(turnInput);
-              const steering = flavor.steering;
               // A text-only steer leaves attachments to the orchestrator's restart.
               if (
                 steering === undefined ||
