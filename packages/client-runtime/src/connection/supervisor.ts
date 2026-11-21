@@ -1341,6 +1341,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       const applicationActivated = yield* waitForRetrySignal(delayMs);
       if (applicationActivated) {
         resetRetryLadder();
+        // Android often closes the socket just before the resume wakeup, so the
+        // wakeup lands here; it must skip the offline report as in the park above.
+        replacing = true;
       }
     }
   });

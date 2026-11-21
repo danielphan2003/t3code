@@ -2292,7 +2292,8 @@ describe("EnvironmentSupervisor routes", () => {
       }).pipe(Effect.provide(harness.dependencies));
 
       yield* Deferred.await(checkingBoth);
-      yield* TestClock.adjust("2500 millis");
+      // The tailnet answered at 700 ms; it is tried while the LAN check still runs.
+      yield* TestClock.adjust("800 millis");
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       expect(
         connectionRouteId(
@@ -3106,60 +3107,33 @@ describe("EnvironmentSupervisor background fibers", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("tries a route as soon as it answers instead of waiting for a dead route", () =>
+  it.effect("connects when the resume wakeup arrives during the retry after a lost socket", () =>
     Effect.gen(function* () {
-      const tailnetTarget = new BearerConnectionTarget({
-        environmentId: TARGET.environmentId,
-        label: TARGET.label,
-        connectionId: "bearer:tailnet",
-      });
-      const entry: ConnectionCatalogEntry = {
-        ...LAN_THEN_RELAY_ENTRY,
-        alternateRoutes: [
-          {
-            target: tailnetTarget,
-            profile: Option.some(
-              new BearerConnectionProfile({
-                connectionId: tailnetTarget.connectionId,
-                environmentId: TARGET.environmentId,
-                label: TARGET.label,
-                httpBaseUrl: "http://100.100.1.2:3773/",
-                wsBaseUrl: "ws://100.100.1.2:3773/",
-                network: "tailscale",
-              }),
-            ),
-          },
-        ],
-      };
-      const checking = yield* Ref.make(0);
-      const checkingBoth = yield* Deferred.make<void>();
+      const probing = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
-        checkRoute: (route) =>
-          Ref.updateAndGet(checking, (count) => count + 1).pipe(
-            Effect.flatMap((count) =>
-              count === 2 ? Deferred.succeed(checkingBoth, undefined) : Effect.void,
-            ),
-            Effect.andThen(
-              connectionRouteId(route.target) === LAN_TARGET.connectionId
-                ? Effect.sleep("2500 millis").pipe(Effect.as("silent" as const))
-                : Effect.sleep("700 millis").pipe(Effect.as("answered" as const)),
-            ),
-          ),
-        prepare: (_attempt, target) => Effect.succeed(preparedFor(target)),
+        probe: () => Deferred.succeed(probing, undefined).pipe(Effect.asVoid),
       });
-      const supervisor = yield* EnvironmentSupervisor.make(entry, {
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
         initiallyDesired: true,
       }).pipe(Effect.provide(harness.dependencies));
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 1,
+      );
 
-      yield* Deferred.await(checkingBoth);
-      // The LAN check is still running; the tailnet answered at 700 ms.
-      yield* TestClock.adjust("800 millis");
-      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
-      expect(
-        connectionRouteId(
-          Option.getOrThrow(yield* SubscriptionRef.get(supervisor.prepared)).target,
-        ),
-      ).toBe("bearer:tailnet");
+      // Android: offline report, the socket closes, then the app returns
+      // before the first retry runs.
+      yield* harness.setNetworkStatus("offline");
+      // The live session answers the offline report with a probe; let it settle.
+      yield* Deferred.await(probing);
+      yield* TestClock.adjust("100 millis");
+      yield* harness.closeLatestSession();
+      yield* awaitState(supervisor.state, (state) => state.phase === "backoff");
+      yield* harness.wake("application-active-long");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
