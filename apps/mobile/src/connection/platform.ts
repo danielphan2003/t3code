@@ -121,6 +121,7 @@ const layerWakeups = Wakeups.layer({
             const nowMs = yield* Clock.currentTimeMillis;
             let backgroundedAtMs = AppState.currentState === "background" ? nowMs : null;
             return AppState.addEventListener("change", (state) => {
+              console.log(`[T3TRACE] ${new Date().toISOString()} appState ${state}`);
               if (state === "background") {
                 backgroundedAtMs = Date.now();
                 return;

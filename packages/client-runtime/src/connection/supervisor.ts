@@ -19,6 +19,7 @@ import * as Tracer from "effect/Tracer";
 
 import type { ConnectionCatalogEntry, ConnectionRoute } from "./catalog.ts";
 import * as Connectivity from "./connectivity.ts";
+import { t3trace } from "./driver.ts";
 import * as ConnectionDriver from "./driver.ts";
 import {
   type ConnectionAttemptError,
@@ -436,6 +437,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           : Option.none(),
       );
     }
+    yield* t3trace("betterRoutes.preflight", {
+      better: better.map((r) => connectionRouteId(r.target)),
+      results,
+    });
     const index = results.indexOf("ready");
     if (index === -1) return;
     yield* signal({
@@ -779,7 +784,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     );
     const hostAnswersWhileSilent = Effect.gen(function* () {
       // A radio still waking up or a stale pooled connection can fail one check.
-      while ((yield* driver.checkHost(lease.prepared)) !== "answered") {
+      for (;;) {
+        const hostCheck = yield* driver.checkHost(lease.prepared);
+        yield* t3trace("silentSocket.checkHost", { hostCheck });
+        if (hostCheck === "answered") break;
         yield* Effect.sleep(SILENT_SOCKET_RECHECK_EVERY);
       }
       if (!answersQuickly(routeKind) && !longResume) {
@@ -812,8 +820,13 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       Effect.forkScoped,
     );
     const routeKind = yield* leaseRouteKind(lease);
+    yield* t3trace("lease.connected", {
+      route: connectionRouteId(lease.prepared.target),
+      routeKind,
+    });
     for (;;) {
       const next = yield* takeSignal;
+      yield* t3trace("signal", { next, route: connectionRouteId(lease.prepared.target) });
       const end = yield* connectedLeaseEnd(next, lease);
       if (end !== undefined) {
         return end === "reset";
@@ -829,6 +842,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         continue;
       }
       yield* Ref.set(probeUnanswered, true);
+      yield* t3trace("probe.start", { probeTimeout: String(probeTimeout) });
       let probe = yield* Effect.forkChild(lease.session.probe);
       // A busy server can miss one foreground probe while the socket is still
       // healthy, so the first miss asks again and only the follow-up's miss
@@ -880,6 +894,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             ),
           ),
         ]);
+        yield* t3trace("probe.event", {
+          tag: probeEvent._tag,
+          ...(probeEvent._tag === "Signal" ? { signal: probeEvent.signal } : {}),
+        });
         if (probeEvent._tag === "SocketAlive") {
           silentSocket = undefined;
           // A frame shows the socket still works, so its probe gets the usual resume time.
@@ -1041,6 +1059,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     }
 
     const active = establishment.exit.value;
+    yield* t3trace("attempt.established", {
+      landed: connectionRouteId(active.lease.prepared.target),
+      switchingTo: Option.getOrNull(switchingTo),
+    });
     if (Option.isSome(switchingTo)) {
       const landed = connectionRouteId(active.lease.prepared.target);
       if (landed !== switchingTo.value) {

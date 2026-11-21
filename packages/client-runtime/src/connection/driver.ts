@@ -63,6 +63,15 @@ const ROUTE_CHECK_TIMEOUT_MS = 2_500;
 // wait the full probe timeout for a LAN the device has already left. A route
 // that misses it connects over relay, then upgrades with a second reconnect.
 const ROUTE_CHECK_HEAD_START_MS = 500;
+// T3TRACE: temporary instrumentation for route-switch timing.
+const traceT0 = Date.now();
+export const t3trace = (event: string, data: Record<string, unknown> = {}) =>
+  Effect.sync(() => {
+    console.log(
+      `[T3TRACE] ${new Date().toISOString()} +${Date.now() - traceT0} ${event} ${JSON.stringify(data)}`,
+    );
+  });
+const traceRoute = (route: ConnectionRoute) => connectionRouteId(route.target);
 
 export class ConnectionDriver extends Context.Service<
   ConnectionDriver,
@@ -91,8 +100,28 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   const checks =
     routes.length === 1
       ? []
-      : yield* Effect.forEach(routes, (route) => Effect.forkChild(checkRoute(route)));
-  const headStart = yield* Effect.forkChild(Effect.sleep(ROUTE_CHECK_HEAD_START_MS));
+      : yield* Effect.forEach(routes, (route) =>
+          Effect.forkChild(
+            Effect.gen(function* () {
+              const started = Date.now();
+              yield* t3trace("check.start", { route: traceRoute(route) });
+              const result = yield* checkRoute(route);
+              yield* t3trace("check.done", {
+                route: traceRoute(route),
+                result,
+                ms: Date.now() - started,
+              });
+              return result;
+            }),
+          ),
+        );
+  yield* t3trace("connectOverRoutes.start", { routes: routes.map(traceRoute) });
+  const headStartBegan = Date.now();
+  const headStart = yield* Effect.forkChild(
+    Effect.sleep(ROUTE_CHECK_HEAD_START_MS).pipe(
+      Effect.tap(() => t3trace("headStart.fired", { ms: Date.now() - headStartBegan })),
+    ),
+  );
   const attemptScope = yield* Scope.Scope;
   let transient: ConnectionAttemptError | undefined;
   let blocked: ConnectionAttemptError | undefined;
@@ -100,6 +129,8 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   // Each route gets its own scope so a half-open session closes before the next try.
   const attempt = Effect.fnUntraced(function* (route: ConnectionRoute) {
     const routeScope = yield* Scope.fork(attemptScope);
+    const attemptStarted = Date.now();
+    yield* t3trace("attempt.start", { route: traceRoute(route) });
     const result = yield* connectRoute(route).pipe(
       Scope.provide(routeScope),
       Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(routeScope, exit))),
@@ -111,6 +142,17 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       if (isHostCredentialRefusal(result.failure))
         refusedRouteIds.push(connectionRouteId(route.target));
     }
+    yield* t3trace("attempt.done", {
+      route: traceRoute(route),
+      ok: result._tag === "Success",
+      ms: Date.now() - attemptStarted,
+      ...(result._tag === "Failure"
+        ? {
+            error: String(result.failure._tag),
+            reason: (result.failure as { reason?: string }).reason,
+          }
+        : {}),
+    });
     return result;
   });
   const silent: Array<{ readonly route: ConnectionRoute; readonly index: number }> = [];
@@ -122,6 +164,7 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
             Fiber.join(checks[index]!),
             Fiber.join(headStart).pipe(Effect.as<RouteCheck>("silent")),
           );
+    yield* t3trace("route.decision", { route: traceRoute(route), check });
     if (check === "silent") {
       silent.push({ route, index });
       continue;
@@ -186,25 +229,35 @@ export const make = Effect.gen(function* () {
   // The descriptor is public, so this sends no credential to whatever
   // answers at a saved LAN address on a different network.
   const checkDescriptor = (httpBaseUrl: string, environmentId: string, keepsItsHost: boolean) =>
-    fetchRemoteEnvironmentDescriptor({
-      httpBaseUrl,
-      timeoutMs: ROUTE_CHECK_TIMEOUT_MS,
-    }).pipe(
-      Effect.option,
-      // The connect this check leads to skips its own read. Every answer, even a
-      // failure, replaces what an older check remembered.
-      Effect.tap((descriptor) =>
-        remote.rememberCheckedDescriptor(httpBaseUrl, descriptor, keepsItsHost),
-      ),
-      Effect.map((descriptor): RouteCheck =>
-        Option.exists(descriptor, (value) => value.environmentId === environmentId)
-          ? "answered"
-          : "silent",
-      ),
-      // A cached descriptor would answer for a host that cannot be reached.
-      Effect.provideService(FetchHttpClient.RequestInit, { cache: "no-store" }),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-    );
+    Effect.suspend(() => {
+      const started = Date.now();
+      return t3trace("descriptor.fetch.start", { httpBaseUrl }).pipe(
+        Effect.andThen(
+          fetchRemoteEnvironmentDescriptor({
+            httpBaseUrl,
+            timeoutMs: ROUTE_CHECK_TIMEOUT_MS,
+          }).pipe(
+            Effect.option,
+            // The connect this check leads to skips its own read. Every answer, even a
+            // failure, replaces what an older check remembered.
+            Effect.tap((descriptor) =>
+              remote.rememberCheckedDescriptor(httpBaseUrl, descriptor, keepsItsHost),
+            ),
+            Effect.map((descriptor): RouteCheck =>
+              Option.exists(descriptor, (value) => value.environmentId === environmentId)
+                ? "answered"
+                : "silent",
+            ),
+            // A cached descriptor would answer for a host that cannot be reached.
+            Effect.provideService(FetchHttpClient.RequestInit, { cache: "no-store" }),
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+          ),
+        ),
+        Effect.tap((result) =>
+          t3trace("descriptor.fetch.done", { httpBaseUrl, result, ms: Date.now() - started }),
+        ),
+      );
+    });
 
   const checkRoute = (entry: ConnectionCatalogEntry, route: ConnectionRoute) => {
     const httpBaseUrl = routeHttpBaseUrl(route);
