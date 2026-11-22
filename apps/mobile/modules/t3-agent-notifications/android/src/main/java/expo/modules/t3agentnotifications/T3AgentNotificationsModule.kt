@@ -28,7 +28,10 @@ class T3AgentNotificationsModule : Module() {
 
     Events("onUnifiedPushState")
 
-    OnCreate { AgentUnifiedPush.onChange = { sendEvent("onUnifiedPushState", mapOf<String, Any?>()) } }
+    OnCreate {
+      AgentUnifiedPush.onChange =
+        { sendEvent("onUnifiedPushState", mapOf<String, Any?>()) }
+    }
 
     OnDestroy { AgentUnifiedPush.onChange = null }
 

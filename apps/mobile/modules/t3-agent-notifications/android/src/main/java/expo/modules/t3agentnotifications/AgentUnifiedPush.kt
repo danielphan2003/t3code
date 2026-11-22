@@ -62,15 +62,19 @@ object AgentUnifiedPush {
   fun enable(context: Context, activity: Activity?): String {
     val external = UnifiedPush.getDistributors(context).filter { it != context.packageName }
     val chosen = UnifiedPush.getSavedDistributor(context) ?: external.singleOrNull()
-    if (chosen != null) {
-      register(context, chosen)
-      return "registering"
+    return when {
+      chosen != null -> {
+        register(context, chosen)
+        "registering"
+      }
+      external.isEmpty() || activity == null -> "none"
+      else -> {
+        UnifiedPush.tryPickDistributor(activity) { picked ->
+          if (picked) UnifiedPush.getSavedDistributor(context)?.let { register(context, it) }
+        }
+        "picking"
+      }
     }
-    if (external.isEmpty() || activity == null) return "none"
-    UnifiedPush.tryPickDistributor(activity) { picked ->
-      if (picked) UnifiedPush.getSavedDistributor(context)?.let { register(context, it) }
-    }
-    return "picking"
   }
 
   private fun register(context: Context, distributor: String) {

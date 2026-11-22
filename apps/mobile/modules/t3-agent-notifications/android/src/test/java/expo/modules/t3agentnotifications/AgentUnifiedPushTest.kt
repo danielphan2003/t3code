@@ -49,13 +49,21 @@ class AgentUnifiedPushTest : AgentNotificationsFixture() {
 
   @Test
   fun keysAreExposedAndANewAuthSecretPostsAChangeNotice() {
-    AgentUnifiedPush.endpointChanged(context, "http://push.example/up", PublicKeySet("p256", "auth1"))
+    AgentUnifiedPush.endpointChanged(
+      context,
+      "http://push.example/up",
+      PublicKeySet("p256", "auth1")
+    )
     assertEquals(
       mapOf("p256dh" to "p256", "auth" to "auth1"),
       AgentUnifiedPush.state(context)["keys"]
     )
     assertTrue(manager.activeNotifications.isEmpty())
-    AgentUnifiedPush.endpointChanged(context, "http://push.example/up", PublicKeySet("p256", "auth2"))
+    AgentUnifiedPush.endpointChanged(
+      context,
+      "http://push.example/up",
+      PublicKeySet("p256", "auth2")
+    )
     assertEquals(73002, manager.activeNotifications.single().id)
   }
 }
