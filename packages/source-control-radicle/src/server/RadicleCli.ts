@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -134,6 +135,7 @@ const SHOW_BATCH = 100;
 
 const make = Effect.gen(function* () {
   const { process } = yield* SourceControlHost.SourceControlHost;
+  const fileSystem = yield* FileSystem.FileSystem;
   let cachedSelf: RadicleSelf | null = null;
   let cachedHome: string | null = null;
 
@@ -202,21 +204,29 @@ const make = Effect.gen(function* () {
     readonly cwd: string;
     readonly selector?: string | undefined;
   }) {
-    const given = input.selector === undefined ? null : parseRid(input.selector);
-    // The checkout's own ID has the case `rad` needs, which a lowercased selector lost.
+    // Callers may lowercase the selector, and `rad` needs the ID's case: the checkout's own ID
+    // and the node's storage, named by ID, both keep it.
+    const wanted = input.selector?.trim().replace(/^rad:/u, "").toLowerCase() || null;
     const local = yield* rad({ operation: "repository", cwd: input.cwd, args: ["."] }).pipe(
       Effect.map((stdout) => parseRid(stdout.trim())),
       Effect.orElseSucceed(() => null),
     );
-    const rid =
-      local !== null && (given === null || given.toLowerCase() === local.toLowerCase())
-        ? local
-        : given;
+    const stored =
+      wanted === null || local?.toLowerCase() === wanted
+        ? null
+        : yield* fileSystem.readDirectory(`${yield* home(input.cwd)}/storage`).pipe(
+            Effect.map((names) => names.find((name) => name.toLowerCase() === wanted) ?? null),
+            Effect.orElseSucceed(() => null),
+          );
+    const rid = wanted === null || local?.toLowerCase() === wanted ? local : stored;
     if (rid === null) {
       return yield* new RadicleCliError({
         operation: "repository",
         reason: "not-found",
-        detail: "This checkout is not a Radicle repository. Run `rad init` or `rad clone` first.",
+        detail:
+          wanted === null
+            ? "This checkout is not a Radicle repository. Run `rad init` or `rad clone` first."
+            : "This node does not have that Radicle repository. Clone it with `rad clone` first.",
       });
     }
     return { rid, storage: `${yield* home(input.cwd)}/storage/${rid}` };

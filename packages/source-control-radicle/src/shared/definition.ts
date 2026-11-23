@@ -121,11 +121,11 @@ export const definition = defineSourceControl({
       repositoryUrl: `${url.origin}${match[1]}`,
     };
   },
-  // The scope is the project's binding, `rad:` and the ID in its own case, which the URL keeps.
+  // Lower case, like the project bindings links are matched against; the tracker restores the case.
   parseIssueUrl: (url) => {
     const match = EXPLORER_ISSUE_PATH.exec(url.pathname);
     return match?.[1] && match[2]
-      ? { host: RADICLE_HOST, scope: `rad:${match[1]}`, key: match[2] }
+      ? { host: RADICLE_HOST, scope: `rad:${match[1].toLowerCase()}`, key: match[2] }
       : null;
   },
   changeRequestUrlFromReferenceAutolink: () => null,

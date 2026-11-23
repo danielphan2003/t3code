@@ -125,13 +125,26 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  /** Logins or DIDs, as a client may hold either, to the DIDs `rad issue assign` takes. */
-  const toDids = (people: ReadonlyArray<string>, aliases: ReadonlyMap<string, string>) =>
-    people.map(
-      (person) =>
-        [...aliases].find(([, alias]) => alias === person)?.[0] ??
-        (person.startsWith("did:key:") ? person : `did:key:${person}`),
+  /**
+   * Logins or DIDs, as a client may hold either, to the DIDs `rad issue assign` takes. A login can
+   * be an alias or a shortened node ID, so it is matched against every person the node knows.
+   */
+  const toDids = (
+    people: ReadonlyArray<string>,
+    known: ReadonlyArray<string>,
+    aliases: ReadonlyMap<string, string>,
+  ) => {
+    const byLogin = new Map(
+      [...aliases.keys(), ...known].map((person) => {
+        const did = person.startsWith("did:key:") ? person : `did:key:${person}`;
+        return [radicleLogin(did, aliases), did] as const;
+      }),
     );
+    return people.map(
+      (person) =>
+        byLogin.get(person) ?? (person.startsWith("did:key:") ? person : `did:key:${person}`),
+    );
+  };
 
   const tracker: IssueTrackerApi = {
     kind: KIND,
@@ -243,6 +256,7 @@ export const make = Effect.gen(function* () {
     create: Effect.fn("RadicleIssueTracker.create")(
       function* (input) {
         const { repository, aliases } = yield* target(input);
+        const project = yield* cli.project({ cwd: input.cwd, repository });
         const stdout = yield* radIssue("create", input, [
           "open",
           "--title",
@@ -251,7 +265,10 @@ export const make = Effect.gen(function* () {
           "--description",
           input.body,
           ...input.labels.flatMap((label) => ["--labels", label]),
-          ...toDids(input.assignees, aliases).flatMap((did) => ["--assignees", did]),
+          ...toDids(input.assignees, project.delegates, aliases).flatMap((did) => [
+            "--assignees",
+            did,
+          ]),
         ]);
         let id = ISSUE_ID.exec(stdout)?.[1];
         if (id === undefined) {
@@ -314,8 +331,10 @@ export const make = Effect.gen(function* () {
           }
         }
         if (input.assignees !== undefined) {
-          const current = toDids(issue.assignees, aliases);
-          const wanted = toDids(input.assignees, aliases);
+          const project = yield* cli.project({ cwd: input.cwd, repository });
+          const known = [...issue.assignees, ...project.delegates];
+          const current = toDids(issue.assignees, known, aliases);
+          const wanted = toDids(input.assignees, known, aliases);
           const add = wanted.filter((did) => !current.includes(did));
           const remove = current.filter((did) => !wanted.includes(did));
           if (add.length + remove.length > 0) {

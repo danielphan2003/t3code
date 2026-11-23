@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -137,6 +138,10 @@ export function radicleLayer(options: {
   readonly status?: string;
   readonly answer?: (input: Run) => string | undefined;
   readonly git?: TestSourceControlHost.TestSourceControlHostOptions["git"];
+  /** The node's alias, or null for a node that has none. */
+  readonly viewerAlias?: string | null;
+  /** Repository IDs the node's storage holds. */
+  readonly storage?: ReadonlyArray<string>;
 }) {
   const out = (stdout: string, exitCode = 0) =>
     Effect.succeed(
@@ -155,7 +160,10 @@ export function radicleLayer(options: {
         if (input.command === "rad") {
           if (args === ".") return yield* out(`rad:${RID}\n`);
           if (args === "self --did") return yield* out(`did:key:${VIEWER}\n`);
-          if (args === "self --alias") return yield* out("viewer@bridge\n");
+          if (args === "self --alias")
+            return yield* out(
+              `${options.viewerAlias === undefined ? "viewer@bridge" : (options.viewerAlias ?? "")}\n`,
+            );
           if (args === "self --home") return yield* out("/home/test/.radicle\n");
           if (args.endsWith("--payload"))
             return yield* out(
@@ -193,5 +201,8 @@ export function radicleLayer(options: {
       }),
     },
   });
-  return RadicleCli.layer.pipe(Layer.provideMerge(host));
+  const storage = FileSystem.layerNoop({
+    readDirectory: () => Effect.succeed([...(options.storage ?? [RID])]),
+  });
+  return RadicleCli.layer.pipe(Layer.provide(storage), Layer.provideMerge(host));
 }

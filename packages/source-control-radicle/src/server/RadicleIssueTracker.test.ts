@@ -133,3 +133,46 @@ it.effect("changes only the labels and assignees that differ, and sets states by
     ]);
   }).pipe(Effect.provide(radicleLayer({ runs })));
 });
+
+it.effect("keeps an assignee a client names by shortened node ID when adding another", () => {
+  const runs: Array<Run> = [];
+  return Effect.gen(function* () {
+    const tracker = yield* RadicleIssueTracker.make;
+    // With no alias, the viewer's login is the short node ID clients send back.
+    const viewerLogin = `${VIEWER.slice(0, 7)}…${VIEWER.slice(-7)}`;
+    yield* tracker.update!({ ...at, key: ISSUE, assignees: [viewerLogin, "author@laptop"] });
+    assert.deepStrictEqual(issueArgs(runs), [
+      ["issue", "assign", ISSUE, "--add", `did:key:${AUTHOR}`, "--repo", `rad:${RID}`],
+    ]);
+  }).pipe(Effect.provide(radicleLayer({ runs, viewerAlias: null })));
+});
+
+it.effect("restores the case of another repository's ID from the node's storage", () => {
+  const runs: Array<Run> = [];
+  const other = "zOtherRepoABCDEFGHJKmnpqrst";
+  return Effect.gen(function* () {
+    const tracker = yield* RadicleIssueTracker.make;
+    yield* tracker.setState!({
+      ...at,
+      scope: `rad:${other.toLowerCase()}`,
+      key: ISSUE,
+      state: "closed",
+    });
+    assert.deepStrictEqual(issueArgs(runs).at(-1)?.slice(-2), ["--repo", `rad:${other}`]);
+  }).pipe(Effect.provide(radicleLayer({ runs, storage: [RID, other] })));
+});
+
+it.effect("assigns a peer the node knows by alias, though not a delegate or assignee", () => {
+  const runs: Array<Run> = [];
+  return Effect.gen(function* () {
+    const tracker = yield* RadicleIssueTracker.make;
+    yield* tracker.create!({
+      ...at,
+      title: "x",
+      body: "",
+      labels: [],
+      assignees: ["viewer@bridge"],
+    });
+    assert.deepStrictEqual(issueArgs(runs)[0]?.slice(6, 8), ["--assignees", `did:key:${VIEWER}`]);
+  }).pipe(Effect.provide(radicleLayer({ runs })));
+});

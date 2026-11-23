@@ -119,7 +119,7 @@ it("parses an issue link into the project's binding scope", () => {
     definition.parseIssueUrl?.(
       new URL(`https://radicle.network/nodes/seed.radicle.dev/rad:${RID}/issues/${issue}`),
     ),
-  ).toEqual({ host: "radicle", scope: `rad:${RID}`, key: issue });
+  ).toEqual({ host: "radicle", scope: `rad:${RID.toLowerCase()}`, key: issue });
   expect(
     definition.parseIssueUrl?.(new URL(`https://radicle.network/nodes/n/rad:${RID}/issues`)),
   ).toBeNull();
