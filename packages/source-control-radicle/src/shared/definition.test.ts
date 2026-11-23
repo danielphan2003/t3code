@@ -58,6 +58,28 @@ describe("patch links", () => {
     });
   });
 
+  it("keeps the ID's case when a caller lowercased the repository", () => {
+    const number = patchNumberFromId(PATCH);
+    const expected = `https://radicle.network/nodes/seed.radicle.dev/rad:${RID}/patches/${PATCH.slice(0, 10)}`;
+    const lowercased = { host: "radicle", repository: `rad:${RID.toLowerCase()}`, number };
+    expect(definition.changeRequestUrl({ ...lowercased, remoteUrl: `rad://${RID}/${NID}` })).toBe(
+      expected,
+    );
+    expect(
+      definition.changeRequestUrl({
+        ...lowercased,
+        webUrl: `https://radicle.network/nodes/seed.radicle.dev/rad:${RID}`,
+      }),
+    ).toBe(expected);
+    // A remote of another repository cannot restore this one's case.
+    expect(
+      definition.changeRequestUrl({
+        ...lowercased,
+        remoteUrl: "rad://zAnotherRepo23456789abcdefGH",
+      }),
+    ).toBeNull();
+  });
+
   it("parses a full patch ID on any explorer host", () => {
     const link = definition.parseChangeRequestUrl(
       new URL(`https://explorer.example/nodes/seed.example:8080/rad:${RID}/patches/${PATCH}`),
@@ -92,7 +114,10 @@ describe("patch links", () => {
 });
 
 it("reads the patch a checkout command names", () => {
-  expect(definition.checkoutCommandArgument("rad patch checkout 57045d7f5e")).toBe("57045d7f5e");
+  expect(definition.checkoutCommandArgument("rad patch checkout 57045d7f5e")).toBe(
+    String(patchNumberFromId(PATCH)),
+  );
+  expect(definition.checkoutCommandArgument("rad patch checkout 57045d7")).toBeNull();
   expect(definition.checkoutCommand({ number: patchNumberFromId(PATCH), headBranch: "x" })).toBe(
     `rad patch checkout ${PATCH.slice(0, 10)}`,
   );

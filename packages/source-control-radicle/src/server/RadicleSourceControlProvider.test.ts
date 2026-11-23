@@ -39,7 +39,7 @@ it.effect("keys the identity by repository ID, whichever peer remote sorted firs
       rootPath: "/repo",
       provider: SourceControlProviderKind.make("radicle"),
       name: RID,
-      displayName: "sandbox",
+      displayName: `rad:${RID}`,
     });
   }).pipe(
     Effect.provide(

@@ -93,9 +93,15 @@ export const definition = defineSourceControl({
   publishHost: () => "your Radicle node",
   newRepositoryOwner: () => ({ owner: null }),
   defaultCloneTransport: "https",
-  changeRequestUrl: ({ repository, number, webUrl }) => {
-    const rid = parseRid(repository);
-    return rid === null ? null : patchUrl({ rid, patch: patchPrefixFromNumber(number), webUrl });
+  // Callers may lowercase `repository`; the web URL and the checkout's remote keep the ID's case.
+  changeRequestUrl: ({ repository, number, remoteUrl, webUrl }) => {
+    const patch = patchPrefixFromNumber(number);
+    if (webUrl) return `${webUrl}/patches/${patch}`;
+    // A lowercased ID may not be base58 any more, so it is compared before it is parsed.
+    const given = repository.trim().replace(/^rad:/u, "").toLowerCase();
+    const remote = remoteUrl === undefined ? null : parseRadicleRemote(remoteUrl)?.rid;
+    const rid = remote?.toLowerCase() === given ? remote : parseRid(repository);
+    return rid == null ? null : patchUrl({ rid, patch });
   },
   parseChangeRequestUrl: (url) => {
     const match = EXPLORER_PATCH_PATH.exec(url.pathname);
@@ -114,7 +120,11 @@ export const definition = defineSourceControl({
   authorProfileUrl: () => null,
   // `rad patch comment` needs a message; an accept or reject verdict stands on its own.
   reviewSummaryRequired: (verdict) => verdict === "comment",
-  checkoutCommandArgument: (input) => CHECKOUT_COMMAND.exec(input.trim())?.[1] ?? null,
+  // The checkout dialog takes a number or a link, so a patch ID becomes its number.
+  checkoutCommandArgument: (input) => {
+    const id = CHECKOUT_COMMAND.exec(input.trim())?.[1];
+    return id && /^[0-9a-f]{10,40}$/u.test(id) ? String(patchNumberFromId(id)) : null;
+  },
   isChangeRequestReference: (url) => {
     try {
       return EXPLORER_PATCH_PATH.test(new URL(url).pathname);

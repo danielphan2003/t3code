@@ -157,6 +157,24 @@ it.effect("closes and drafts with archive and ready --undo", () => {
   }).pipe(Effect.provide(radicleLayer({ runs })));
 });
 
+it.effect("leaves out a patch already delivered at the page boundary before the limit", () => {
+  const runs: Array<Run> = [];
+  return Effect.gen(function* () {
+    const provider = yield* RadiclePullRequestProvider.make;
+    const page = yield* provider.listChangeRequests({
+      ...ref,
+      state: "open",
+      involvement: "all",
+      viewer: "viewer@bridge",
+      limit: 1,
+      // The fixture patch was last updated 5 s after the epoch.
+      cursor: { updatedBefore: "1970-01-01T00:00:05.000Z", delivered: 1, seenAt: [number] },
+    });
+    assert.deepStrictEqual(page.items, []);
+    assert.strictEqual(page.truncated, false);
+  }).pipe(Effect.provide(radicleLayer({ runs })));
+});
+
 it.effect("refuses to merge for someone who is not a delegate, before touching git", () => {
   const runs: Array<Run> = [];
   return Effect.gen(function* () {

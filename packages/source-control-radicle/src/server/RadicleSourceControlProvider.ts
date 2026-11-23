@@ -43,13 +43,13 @@ export function patchNumberFromReference(reference: string): number | null {
 
 /**
  * The repository's own identity: keyed by its ID rather than whichever peer's remote sorted first,
- * so every checkout on every machine groups together, with the ID's case kept in `name`.
+ * so every checkout on every machine groups together. The ID keeps its case in `name`, and is the
+ * display name too, since callers address the repository by the display name.
  */
 function radicleIdentity(input: {
   readonly identity: RepositoryIdentity;
   readonly rid: string;
   readonly remoteName: string;
-  readonly projectName: string | null;
 }): RepositoryIdentity {
   const { owner: _owner, ...identity } = input.identity;
   return {
@@ -63,7 +63,7 @@ function radicleIdentity(input: {
     webUrl: `${RADICLE_EXPLORER}/rad:${input.rid}`,
     provider: KIND,
     name: input.rid,
-    ...(input.projectName ? { displayName: input.projectName } : {}),
+    displayName: `rad:${input.rid}`,
   };
 }
 
@@ -153,14 +153,11 @@ export const make = Effect.gen(function* () {
     if (identity.provider !== KIND || remote === null) return identity;
     const cwd = identity.rootPath;
     if (cwd === undefined) {
-      return radicleIdentity({ identity, rid: remote.rid, remoteName: "rad", projectName: null });
+      return radicleIdentity({ identity, rid: remote.rid, remoteName: "rad" });
     }
     const radRemote = yield* host.git
       .readConfigValue(cwd, "remote.rad.url")
       .pipe(Effect.orElseSucceed(() => null));
-    const project = yield* cli
-      .project({ cwd, repository: { rid: remote.rid, storage: "" } })
-      .pipe(Effect.option);
     return radicleIdentity({
       identity,
       rid: remote.rid,
@@ -168,7 +165,6 @@ export const make = Effect.gen(function* () {
         radRemote !== null && parseRadicleRemote(radRemote)?.rid === remote.rid
           ? "rad"
           : identity.locator.remoteName,
-      projectName: Option.isSome(project) ? project.value.name : null,
     });
   });
 

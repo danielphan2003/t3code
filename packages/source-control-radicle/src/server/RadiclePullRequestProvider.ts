@@ -333,6 +333,7 @@ export const make = Effect.gen(function* () {
             : resolvePullRequestAuthorFilter(input.filters.author, input.viewer);
         const query = input.query?.trim().toLowerCase();
         const before = input.cursor ? Date.parse(input.cursor.updatedBefore) : Infinity;
+        const seenAtBoundary = new Set(input.cursor?.seenAt ?? []);
         const rows = patches
           .filter((patch) => {
             const state = pullRequestState(patch);
@@ -344,6 +345,7 @@ export const make = Effect.gen(function* () {
             if (input.filters?.draft === "hide" && patch.status === "draft") return false;
             if (author !== undefined && login !== author) return false;
             if (query && !patch.title.toLowerCase().includes(query)) return false;
+            if (patch.updatedAt === before && seenAtBoundary.has(patch.number)) return false;
             return patch.updatedAt <= before;
           })
           .toSorted((left, right) => right.updatedAt - left.updatedAt);
