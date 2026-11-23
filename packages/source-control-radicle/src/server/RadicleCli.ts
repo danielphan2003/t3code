@@ -7,6 +7,7 @@ import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 
 import { parseRid, patchNumberFromId, patchPrefixFromNumber } from "../shared/definition.ts";
+import { RadicleIssueCob, type RadicleIssue, toRadicleIssue } from "./radicleIssueJson.ts";
 import { RadiclePatchCob, type RadiclePatch, toRadiclePatch } from "./radiclePatchJson.ts";
 
 export class RadicleCliError extends Schema.TaggedError<RadicleCliError>()("RadicleCliError", {
@@ -50,6 +51,11 @@ const Payload = Schema.Struct({
 });
 const decodePayload = decodeJsonResult(Payload);
 const decodePatchCob = decodeJsonResult(RadiclePatchCob);
+const decodeIssueCob = decodeJsonResult(RadicleIssueCob);
+
+const PATCH_TYPE = "xyz.radicle.patch";
+const ISSUE_TYPE = "xyz.radicle.issue";
+type CobType = typeof PATCH_TYPE | typeof ISSUE_TYPE;
 
 const DELEGATE_LINE = /^(did:key:\S+)(?:\s+\((.+)\))?$/u;
 
@@ -110,6 +116,13 @@ export class RadicleCli extends Context.Service<
     readonly listPatches: (
       input: RepositoryInput,
     ) => Effect.Effect<ReadonlyArray<RadiclePatch>, RadicleCliError>;
+    readonly listIssues: (
+      input: RepositoryInput,
+    ) => Effect.Effect<ReadonlyArray<RadicleIssue>, RadicleCliError>;
+    /** The issue whose ID is `key` or starts with it. */
+    readonly getIssue: (
+      input: RepositoryInput & { readonly key: string },
+    ) => Effect.Effect<RadicleIssue, RadicleCliError>;
     /** The patch whose ID starts with `number`'s hex digits. */
     readonly getPatch: (
       input: RepositoryInput & { readonly number: number },
@@ -259,11 +272,11 @@ const make = Effect.gen(function* () {
     return map;
   });
 
-  const listPatchIds = (input: RepositoryInput) =>
+  const listCobIds = (input: RepositoryInput, type: CobType) =>
     rad({
-      operation: "listPatches",
+      operation: "listCobs",
       cwd: input.cwd,
-      args: ["cob", "list", "--repo", `rad:${input.repository.rid}`, "--type", "xyz.radicle.patch"],
+      args: ["cob", "list", "--repo", `rad:${input.repository.rid}`, "--type", type],
     }).pipe(
       Effect.map((stdout) =>
         stdout
@@ -273,15 +286,18 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const showPatches = Effect.fn("RadicleCli.showPatches")(function* (
+  /** One JSON document per object, in batches so a long list stays within argument limits. */
+  const showCobs = Effect.fn("RadicleCli.showCobs")(function* <A>(
     input: RepositoryInput & { readonly ids: ReadonlyArray<string> },
+    type: CobType,
+    decode: (line: string, requested: ReadonlySet<string>) => Result.Result<A | null, unknown>,
   ) {
-    const patches: Array<RadiclePatch> = [];
+    const objects: Array<A> = [];
     for (let start = 0; start < input.ids.length; start += SHOW_BATCH) {
       const ids = input.ids.slice(start, start + SHOW_BATCH);
       const requested = new Set(ids);
       const stdout = yield* rad({
-        operation: "showPatches",
+        operation: "showCobs",
         cwd: input.cwd,
         args: [
           "cob",
@@ -289,41 +305,46 @@ const make = Effect.gen(function* () {
           "--repo",
           `rad:${input.repository.rid}`,
           "--type",
-          "xyz.radicle.patch",
+          type,
           ...ids.flatMap((id) => ["--object", id]),
         ],
       });
       for (const line of stdout.split("\n")) {
         if (line.trim().length === 0) continue;
-        const cob = decodePatchCob(line);
-        if (Result.isFailure(cob)) {
+        const decoded = decode(line, requested);
+        if (Result.isFailure(decoded)) {
           return yield* new RadicleCliError({
-            operation: "showPatches",
+            operation: "showCobs",
             reason: "failed",
-            detail: "Could not read a Radicle patch. Check that `rad` is version 1.10 or later.",
-            cause: cob.failure,
+            detail: `Could not read a Radicle ${type === PATCH_TYPE ? "patch" : "issue"}. Check that \`rad\` is version 1.10 or later.`,
+            cause: decoded.failure,
           });
         }
-        const patch = toRadiclePatch(cob.success, requested);
-        if (patch !== null) patches.push(patch);
+        if (decoded.success !== null) objects.push(decoded.success);
       }
     }
-    return patches;
+    return objects;
   });
 
+  const decodePatch = (line: string, requested: ReadonlySet<string>) =>
+    Result.map(decodePatchCob(line), (cob) => toRadiclePatch(cob, requested));
+  const decodeIssue = (line: string, requested: ReadonlySet<string>) =>
+    Result.map(decodeIssueCob(line), (cob) => toRadicleIssue(cob, requested));
+
   const listPatches = Effect.fn("RadicleCli.listPatches")(function* (input: RepositoryInput) {
-    const ids = yield* listPatchIds(input);
-    return yield* showPatches({ ...input, ids });
+    const ids = yield* listCobIds(input, PATCH_TYPE);
+    return yield* showCobs({ ...input, ids }, PATCH_TYPE, decodePatch);
   });
 
   const getPatch = Effect.fn("RadicleCli.getPatch")(function* (
     input: RepositoryInput & { readonly number: number },
   ) {
     const prefix = patchPrefixFromNumber(input.number);
-    const ids = (yield* listPatchIds(input)).filter(
+    const ids = (yield* listCobIds(input, PATCH_TYPE)).filter(
       (id) => id.startsWith(prefix) && patchNumberFromId(id) === input.number,
     );
-    const [patch] = ids.length === 1 ? yield* showPatches({ ...input, ids }) : [];
+    const [patch] =
+      ids.length === 1 ? yield* showCobs({ ...input, ids }, PATCH_TYPE, decodePatch) : [];
     if (patch === undefined) {
       return yield* new RadicleCliError({
         operation: "getPatch",
@@ -337,7 +358,45 @@ const make = Effect.gen(function* () {
     return patch;
   });
 
-  return RadicleCli.of({ rad, git, self, repository, project, aliases, listPatches, getPatch });
+  const listIssues = Effect.fn("RadicleCli.listIssues")(function* (input: RepositoryInput) {
+    const ids = yield* listCobIds(input, ISSUE_TYPE);
+    return yield* showCobs({ ...input, ids }, ISSUE_TYPE, decodeIssue);
+  });
+
+  const getIssue = Effect.fn("RadicleCli.getIssue")(function* (
+    input: RepositoryInput & { readonly key: string },
+  ) {
+    const key = input.key.trim().toLowerCase();
+    const ids = /^[0-9a-f]{7,40}$/u.test(key)
+      ? (yield* listCobIds(input, ISSUE_TYPE)).filter((id) => id.startsWith(key))
+      : [];
+    const [issue] =
+      ids.length === 1 ? yield* showCobs({ ...input, ids }, ISSUE_TYPE, decodeIssue) : [];
+    if (issue === undefined) {
+      return yield* new RadicleCliError({
+        operation: "getIssue",
+        reason: "not-found",
+        detail:
+          ids.length > 1
+            ? `More than one issue starts with ${key}.`
+            : "No such issue in this repository. Name it by its ID or an ID prefix.",
+      });
+    }
+    return issue;
+  });
+
+  return RadicleCli.of({
+    rad,
+    git,
+    self,
+    repository,
+    project,
+    aliases,
+    listPatches,
+    getPatch,
+    listIssues,
+    getIssue,
+  });
 });
 
 export const layer = Layer.effect(RadicleCli, make);
