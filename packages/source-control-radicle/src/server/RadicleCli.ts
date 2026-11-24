@@ -68,6 +68,8 @@ const ISSUE_TYPE = "xyz.radicle.issue";
 const JOB_TYPE = "xyz.radworks.job";
 type CobType = typeof PATCH_TYPE | typeof ISSUE_TYPE | typeof JOB_TYPE;
 
+const LOG_TAIL_BYTES = 4 * 1024 * 1024;
+
 /** A path from a job record, safe to hand to a remote shell as one word. */
 const LOG_PATH = /^\/[A-Za-z0-9._/-]+$/u;
 
@@ -478,9 +480,8 @@ const make = Effect.gen(function* () {
     readonly cwd: string;
     readonly url: string;
   }) {
-    const path = input.url.startsWith("file://")
-      ? decodeURIComponent(input.url.slice("file://".length))
-      : null;
+    // Not decoded: the path's character class has no `%`, so an escaped path is refused.
+    const path = input.url.startsWith("file://") ? input.url.slice("file://".length) : null;
     if (path === null || !LOG_PATH.test(path) || path.includes("..")) {
       return yield* new RadicleCliError({
         operation: "readJobLog",
@@ -492,6 +493,7 @@ const make = Effect.gen(function* () {
     const host = ciHost.trim();
     if (host.length === 0) {
       return yield* fileSystem.readFileString(path).pipe(
+        Effect.map((text) => text.slice(-LOG_TAIL_BYTES)),
         Effect.mapError(
           (cause) =>
             new RadicleCliError({
@@ -507,10 +509,11 @@ const make = Effect.gen(function* () {
       .run({
         operation: "RadicleCli.readJobLog",
         command: "ssh",
-        args: ["-o", "BatchMode=yes", "--", host, "cat", "--", path],
+        // The end of a log is where a failure is, so only the tail crosses the network.
+        args: ["-o", "BatchMode=yes", "--", host, "tail", "-c", String(LOG_TAIL_BYTES), "--", path],
         cwd: input.cwd,
         timeoutMs: 30_000,
-        maxOutputBytes: 8 * 1024 * 1024,
+        maxOutputBytes: LOG_TAIL_BYTES + 1024,
         outputMode: "truncate",
       })
       .pipe(Effect.mapError(toError("readJobLog", "ssh")));

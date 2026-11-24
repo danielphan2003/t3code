@@ -106,11 +106,12 @@ it.effect("reads a log over ssh on the CI host and refuses a path a shell would 
   const runs: Array<Run> = [];
   return Effect.gen(function* () {
     const provider = yield* RadiclePullRequestProvider.make;
-    const [log, unsafe] = yield* provider.getCheckLogs!({
+    const [log, unsafe, escaped] = yield* provider.getCheckLogs!({
       ...ref,
       checks: [
         { name: "CI", url: "file:///var/lib/ci/reports/run.log" },
         { name: "CI", url: "file:///var/lib/ci/x;rm -rf ~" },
+        { name: "CI", url: "file:///var/lib/ci/bad%.log" },
       ],
       tailLines: 1,
     });
@@ -118,10 +119,24 @@ it.effect("reads a log over ssh on the CI host and refuses a path a shell would 
     assert.isTrue(log?.truncated);
     assert.isNull(unsafe?.log);
     assert.isNotNull(unsafe?.detail);
+    assert.isNull(escaped?.log);
+    assert.isNotNull(escaped?.detail);
     const ssh = runs.filter((run) => run.command === "ssh");
     assert.deepStrictEqual(
       ssh.map((run) => run.args),
-      [["-o", "BatchMode=yes", "--", "ci-host", "cat", "--", "/var/lib/ci/reports/run.log"]],
+      [
+        [
+          "-o",
+          "BatchMode=yes",
+          "--",
+          "ci-host",
+          "tail",
+          "-c",
+          String(4 * 1024 * 1024),
+          "--",
+          "/var/lib/ci/reports/run.log",
+        ],
+      ],
     );
   }).pipe(Effect.provide(radicleLayer({ runs, settings: withCi() })));
 });
